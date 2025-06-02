@@ -13,8 +13,8 @@ const int mqtt_port = 1883;
 const char* access_token = "L6MgZuzAtW6W7iDfgwdf";
 
 // HX711 pins
-#define DOUT 35
-#define CLK 34
+#define DOUT 26
+#define CLK 25
 
 HX711 scale;
 
