@@ -60,7 +60,7 @@ void setup() {
 
   // HX711 setup
   scale.begin(DOUT, CLK);
-  scale.set_scale(1234.5);  // Kalibratie
+  scale.set_scale(161.215);  // Kalibratie
   scale.tare();
   Serial.println("HX711 klaar!");
 }
@@ -79,7 +79,7 @@ void loop() {
     Serial.print("Raw waarde: ");
     Serial.println(raw);
 
-    float gewicht = scale.get_units();
+    float gewicht = scale.get_units(10);  // Gemiddelde over 10 metingen
     Serial.print("Gewicht: ");
     Serial.println(gewicht);
 
