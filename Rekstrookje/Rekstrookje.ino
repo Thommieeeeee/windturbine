@@ -22,7 +22,11 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 unsigned long lastMsg = 0;
-const long interval = 5000;
+const long interval = 500;
+
+long zeroOffset = 0;            // Kalibreer deze waarde bij initialisatie
+long maxTensionOffset = 0;      // maximale buiging (positieve rek)
+long maxCompressionOffset = 0;  // maximale bolling (negatieve rek)
 
 void setup_wifi() {
   delay(10);
@@ -60,8 +64,44 @@ void setup() {
 
   // HX711 setup
   scale.begin(DOUT, CLK);
-  scale.set_scale(161.215);  // Kalibratie
+  scale.set_scale();
   scale.tare();
+
+  // === Automatische kalibratie via seriële invoer ===
+  Serial.println("Wacht op kalibratiecommando's:");
+  Serial.println("Plaats liniaal in neutrale (rechte) toestand en druk op ENTER");
+  while (Serial.available() == 0) {}
+  Serial.read();  // leegmaken buffer
+  zeroOffset = scale.read_average(10);
+  Serial.print("Neutrale stand (zeroOffset): ");
+  Serial.println(zeroOffset);
+
+  Serial.println("Plaats liniaal in maximale buiging en druk op 'b'");
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'b') {
+        maxTensionOffset = scale.read_average(10);
+        Serial.print("Max buiging (tension): ");
+        Serial.println(maxTensionOffset);
+        break;
+      }
+    }
+  }
+
+  Serial.println("Plaats liniaal in maximale bolling en druk op 'o'");
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'o') {
+        maxCompressionOffset = scale.read_average(10);
+        Serial.print("Max bolling (compressie): ");
+        Serial.println(maxCompressionOffset);
+        break;
+      }
+    }
+  }
+
   Serial.println("HX711 klaar!");
 }
 
@@ -79,19 +119,27 @@ void loop() {
     Serial.print("Raw waarde: ");
     Serial.println(raw);
 
-    float gewicht = scale.get_units(10);  // Gemiddelde over 10 metingen
-    Serial.print("Gewicht: ");
-    Serial.println(gewicht);
+    float strain_percent = 0;
 
-    // JSON payload opbouwen
-    String payload = "{\"g\":";
-    payload += String(gewicht, 2);
+    if (raw >= zeroOffset) {
+      strain_percent = ((float)(raw - zeroOffset) / (maxTensionOffset - zeroOffset)) * 100.0;
+    } else {
+      strain_percent = ((float)(raw - zeroOffset) / (zeroOffset - maxCompressionOffset)) * 100.0;
+    }
+
+    strain_percent = constrain(strain_percent, -100.0, 100.0);  // Clamp tot ±100%
+
+    Serial.print("Rek (%): ");
+    Serial.println(strain_percent, 2);
+
+    // JSON payload met rek
+    String payload = "{\"s\":";  // s = strain
+    payload += String(strain_percent, 2);
     payload += "}";
 
     Serial.print("MQTT payload: ");
     Serial.println(payload);
 
-    // Stuur naar ThingsBoard
     client.publish("v1/devices/me/telemetry", (char*)payload.c_str());
   }
 }
