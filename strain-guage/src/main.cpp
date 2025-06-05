@@ -1,6 +1,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "HX711.h"
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 
 // === WIFI ===
 const char* ssid = "eduroam";
@@ -13,16 +15,26 @@ const int mqtt_port = 1883;
 const char* access_token = "L6MgZuzAtW6W7iDfgwdf";
 
 // HX711 pins
-#define DOUT 35
-#define CLK 34
+#define DOUT 26
+#define CLK 25
 
 HX711 scale;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // UTC tijd, update elke 60 sec
+
 unsigned long lastMsg = 0;
-const long interval = 5000;
+const long interval_measure = 500;
+const long interval_send = 2000;
+
+String payloadBuffer = "";
+
+long zeroOffset = 0;            // Kalibreer deze waarde bij initialisatie
+long maxTensionOffset = 0;      // maximale buiging (positieve rek)
+long maxCompressionOffset = 0;  // maximale bolling (negatieve rek)
 
 void setup_wifi() {
   delay(10);
@@ -60,9 +72,52 @@ void setup() {
 
   // HX711 setup
   scale.begin(DOUT, CLK);
-  scale.set_scale(1234.5);  // Kalibratie
+  scale.set_scale();
   scale.tare();
+
+  // === Automatische kalibratie via seriële invoer ===
+  Serial.println("Wacht op kalibratiecommando's:");
+  Serial.println("Plaats liniaal in neutrale (rechte) toestand en druk op ENTER");
+  while (Serial.available() == 0) {}
+  Serial.read();  // leegmaken buffer
+  zeroOffset = scale.read_average(10);
+  Serial.print("Neutrale stand (zeroOffset): ");
+  Serial.println(zeroOffset);
+
+  Serial.println("Plaats liniaal in maximale buiging en druk op 'b'");
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'b') {
+        maxTensionOffset = scale.read_average(10);
+        Serial.print("Max buiging (tension): ");
+        Serial.println(maxTensionOffset);
+        break;
+      }
+    }
+  }
+
+  Serial.println("Plaats liniaal in maximale bolling en druk op 'o'");
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'o') {
+        maxCompressionOffset = scale.read_average(10);
+        Serial.print("Max bolling (compressie): ");
+        Serial.println(maxCompressionOffset);
+        break;
+      }
+    }
+  }
+
   Serial.println("HX711 klaar!");
+
+  timeClient.begin();
+  while (!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
+  Serial.print("Huidige tijd (epoch): ");
+  Serial.println(timeClient.getEpochTime());
 }
 
 void loop() {
@@ -72,26 +127,43 @@ void loop() {
   client.loop();
 
   unsigned long now = millis();
-  if (now - lastMsg > interval) {
+  if (now - lastMsg > interval_measure) {
     lastMsg = now;
 
     long raw = scale.read();
     Serial.print("Raw waarde: ");
     Serial.println(raw);
 
-    float gewicht = scale.get_units();
-    Serial.print("Gewicht: ");
-    Serial.println(gewicht);
+    float strain_percent = 0;
 
-    // JSON payload opbouwen
-    String payload = "{\"g\":";
-    payload += String(gewicht, 2);
+    if (raw >= zeroOffset) {
+      strain_percent = ((float)(raw - zeroOffset) / (maxTensionOffset - zeroOffset)) * 100.0;
+    } else {
+      strain_percent = ((float)(raw - zeroOffset) / (zeroOffset - maxCompressionOffset)) * 100.0;
+    }
+
+    strain_percent = constrain(strain_percent, -100.0, 100.0);  // Clamp tot ±100%
+
+
+    Serial.print("Rek (%): ");
+    Serial.println(strain_percent, 2);
+
+    // JSON payload met rek
+    String payload = "{\"ts\":";
+    payload += String(timeClient.getEpochTime());
+    payload += ", \"s\":";  // s = strain
+    payload += String(strain_percent, 2);
     payload += "}";
 
+    payloadBuffer += payload;
+  }
+
+  if (now - lastMsg > interval_send){
+    String payload = "[" + payloadBuffer + "]";
+    
     Serial.print("MQTT payload: ");
     Serial.println(payload);
 
-    // Stuur naar ThingsBoard
-    client.publish("v1/devices/me/telemetry", (char*)payload.c_str());
+    client.publish("v1/devices/me/telemetry", payload.c_str());
   }
 }
