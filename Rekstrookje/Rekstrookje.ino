@@ -1,6 +1,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "HX711.h"
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 
 // === WIFI ===
 const char* ssid = "eduroam";
@@ -20,6 +22,9 @@ HX711 scale;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // UTC tijd, update elke 60 sec
 
 unsigned long lastMsg = 0;
 const long interval = 500;
@@ -103,6 +108,13 @@ void setup() {
   }
 
   Serial.println("HX711 klaar!");
+
+  timeClient.begin();
+  while (!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
+  Serial.print("Huidige tijd (epoch): ");
+  Serial.println(timeClient.getEpochTime());
 }
 
 void loop() {
@@ -133,7 +145,9 @@ void loop() {
     Serial.println(strain_percent, 2);
 
     // JSON payload met rek
-    String payload = "{\"s\":";  // s = strain
+    String payload = "{\"ts\":";
+    payload += String(timeClient.getEpochTime());
+    payload += ", \"s\":";  // s = strain
     payload += String(strain_percent, 2);
     payload += "}";
 
@@ -142,4 +156,5 @@ void loop() {
 
     client.publish("v1/devices/me/telemetry", (char*)payload.c_str());
   }
+
 }
