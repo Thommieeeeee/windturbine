@@ -4,12 +4,12 @@
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 
-// === WIFI ===
+// Configure Wifi
 const char* ssid = "eduroam";
 const char* username = "bzwzw@edu.nl";
 const char* password = "bvwcg";
 
-// === MQTT (ThingsBoard) ===
+// Configure MQTT (ThingsBoard)
 const char* mqtt_server = "mqtt.eu.thingsboard.cloud";
 const int mqtt_port = 1883;
 const char* access_token = "L6MgZuzAtW6W7iDfgwdf";
@@ -24,15 +24,17 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // UTC tijd, update elke 60 sec
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // UTC time, update every 60 seconds
 
 unsigned long lastMsg = 0;
 const long interval = 500;
 
-long zeroOffset = 0;            // Kalibreer deze waarde bij initialisatie
-long maxTensionOffset = 0;      // maximale buiging (positieve rek)
-long maxCompressionOffset = 0;  // maximale bolling (negatieve rek)
+// Variables for calibration
+long zeroOffset = 0;
+long maxTensionOffset = 0;
+long maxCompressionOffset = 0;  
 
+// Setup for Wifi
 void setup_wifi() {
   delay(10);
   Serial.println();
@@ -48,15 +50,16 @@ void setup_wifi() {
   Serial.println(WiFi.status());
 }
 
+// Function for MQTT connection
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Verbinding maken met MQTT server...");
+    Serial.print("Connecting to MQTT server...");
     if (client.connect("ESP32", access_token, NULL)) {
-      Serial.println("MQTT verbonden!");
+      Serial.println("MQTT connected!");
     } else {
-      Serial.print("Foutcode: ");
+      Serial.print("Errorcode: ");
       Serial.print(client.state());
-      Serial.println(" — opnieuw proberen in 5s");
+      Serial.println(" — trying again in 5s");
       delay(5000);
     }
   }
@@ -72,48 +75,48 @@ void setup() {
   scale.set_scale();
   scale.tare();
 
-  // === Automatische kalibratie via seriële invoer ===
-  Serial.println("Wacht op kalibratiecommando's:");
-  Serial.println("Plaats liniaal in neutrale (rechte) toestand en druk op ENTER");
+  // Automatic calibration using serial input
+  Serial.println("Wait for calibration commands:");
+  Serial.println("Put the ruler in unbent position and press 'enter'");
   while (Serial.available() == 0) {}
-  Serial.read();  // leegmaken buffer
+  Serial.read();  // emptying buffer
   zeroOffset = scale.read_average(10);
-  Serial.print("Neutrale stand (zeroOffset): ");
+  Serial.print("Neutral position (zeroOffset): ");
   Serial.println(zeroOffset);
 
-  Serial.println("Plaats liniaal in maximale buiging en druk op 'b'");
+  Serial.println("Bend the ruler with the ends downwards and send a 'b'");
   while (true) {
     if (Serial.available()) {
       char c = Serial.read();
       if (c == 'b') {
         maxTensionOffset = scale.read_average(10);
-        Serial.print("Max buiging (tension): ");
+        Serial.print("Maximum tension: ");
         Serial.println(maxTensionOffset);
         break;
       }
     }
   }
 
-  Serial.println("Plaats liniaal in maximale bolling en druk op 'o'");
+  Serial.println("Bend the ruler with the ends upwards and send an 'o'");
   while (true) {
     if (Serial.available()) {
       char c = Serial.read();
       if (c == 'o') {
         maxCompressionOffset = scale.read_average(10);
-        Serial.print("Max bolling (compressie): ");
+        Serial.print("Maximum compression: ");
         Serial.println(maxCompressionOffset);
         break;
       }
     }
   }
 
-  Serial.println("HX711 klaar!");
+  Serial.println("HX711 ready!");
 
   timeClient.begin();
   while (!timeClient.update()) {
     timeClient.forceUpdate();
   }
-  Serial.print("Huidige tijd (epoch): ");
+  Serial.print("Current time (epoch): ");
   Serial.println(timeClient.getEpochTime());
 }
 
@@ -127,24 +130,26 @@ void loop() {
   if (now - lastMsg > interval) {
     lastMsg = now;
 
+    // Read raw value
     long raw = scale.read();
-    Serial.print("Raw waarde: ");
+    Serial.print("Raw value: ");
     Serial.println(raw);
 
     float strain_percent = 0;
 
+    // Calculate strain
     if (raw >= zeroOffset) {
       strain_percent = ((float)(raw - zeroOffset) / (maxTensionOffset - zeroOffset)) * 100.0;
     } else {
       strain_percent = ((float)(raw - zeroOffset) / (zeroOffset - maxCompressionOffset)) * 100.0;
     }
 
-    strain_percent = constrain(strain_percent, -100.0, 100.0);  // Clamp tot ±100%
+    strain_percent = constrain(strain_percent, -100.0, 100.0);  // Clamp till ±100%
 
-    Serial.print("Rek (%): ");
+    Serial.print("Strain (%): ");
     Serial.println(strain_percent, 2);
 
-    // JSON payload met rek
+    // JSON payload with strain
     String payload = "{\"ts\":";
     payload += String(timeClient.getEpochTime());
     payload += ", \"s\":";  // s = strain
@@ -154,6 +159,7 @@ void loop() {
     Serial.print("MQTT payload: ");
     Serial.println(payload);
 
+    // Send payload to dashboard
     client.publish("v1/devices/me/telemetry", (char*)payload.c_str());
   }
 
